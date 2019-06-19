@@ -19,6 +19,7 @@ import Data.List.NonEmpty (nonEmpty, NonEmpty)
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
+import Control.Arrow (left)
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.IO.Class
@@ -150,8 +151,8 @@ commandWidget = do
   commandTextArea <- el "div" $ textAreaElement def
   let parseCmd txt = case parseCommand txt of
         Nothing -> Left "Command parse error!"
-        Just x -> Right x
-  eithCommand :: Dynamic t (Either Text UCommand) <- holdDyn (Left "") =<< fmap parseCmd . traceEventWith show<$>
+        Just x -> left T.concat $ typeCheckCommand x
+  eithCommand :: Dynamic t (Either Text LangCommand) <- holdDyn (Left "") =<< fmap parseCmd . traceEventWith show<$>
     debounce 0.2 ( updated $ _textAreaElement_value commandTextArea)
 
   el "div" $ dynText (showt <$> eithCommand)

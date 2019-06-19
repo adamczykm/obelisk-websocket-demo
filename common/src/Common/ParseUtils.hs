@@ -4,7 +4,7 @@ import Text.Megaparsec
 import Text.Megaparsec.Char
 import Data.Word
 
-parenthTerm t = space *> (try (char '(' *> t <* char ')') <|> t) <* space
+parenthTerm t = space *> (try (char '(' *> space *> t <* space <* char ')') <|> t)
 
 
 charsToWords :: [Char] -> [Word8]

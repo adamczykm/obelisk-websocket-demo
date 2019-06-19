@@ -119,7 +119,7 @@ parseAddressB58 :: (ShowErrorComponent e, Ord e) => Parsec e ByteString (Base58R
 parseAddressB58 = Base58Rep "$$" <$> (string "$$" *> (try (parseB58 21) <|> parseB58 20))
 
 parseAddressB58Text :: (ShowErrorComponent e, Ord e) => Parsec e Text (Base58Rep Address)
-parseAddressB58Text = Base58Rep "$$" . B.pack . charsToWords . T.unpack <$> (string "$$" *> parseB58Text 21)
+parseAddressB58Text = Base58Rep "$$" . B.pack . charsToWords . T.unpack <$> (string "$$" *> (try (parseB58Text 21) <|> parseB58Text 20))
 
 instance HasBas58Rep Address where
   toBase58 (Address adr) = Base58Rep "$$" (B58.encodeBase58 B58.bitcoinAlphabet adr)
