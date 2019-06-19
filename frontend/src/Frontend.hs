@@ -13,6 +13,7 @@ import Debug.Trace
 
 import Data.Maybe
 import Data.Dependent.Map
+import Data.Map.Strict (Map)
 import Data.Functor.Sum
 import Data.List.NonEmpty (nonEmpty, NonEmpty)
 import qualified Data.List.NonEmpty as NE
@@ -28,6 +29,7 @@ import TextShow (showt)
 import JSDOM.Types(MonadJSM)
 
 import Reflex.Dom.Core hiding (mainWidget)
+import Reflex.Dom.Time
 
 import Obelisk.Frontend
 -- import Obelisk.ExecutableConfig.Frontend
@@ -69,6 +71,8 @@ mainWidget r = prerender_ (return ()) $ do
   -- (performEvent_ $ liftIO . c2sEventTrigger . NE.toList <$> c2sEvents)
 
   genSecretKeyWidget
+  el "hr" $ return ()
+  commandWidget
 
   where
     tagEvent :: S2C -> DMap S2CEventTag Identity
@@ -107,59 +111,27 @@ webSocketClient r sendMsgEv =
           ws <- jsonWebSocket (render uri) $ def & webSocketConfig_send .~ sendMsgEv
           return $ fmapMaybe id $ _webSocket_recv ws
 
-chatWidget
-  :: ( MonadFix m, MonadHold t m, PerformEvent t m, DomBuilder t m)
-  => Event t (Nickname, Text) -> m (Event t (NonEmpty C2S))
-chatWidget servMsg = do
-  nickLoginEv <- traceEventWith (const "nicklogin") . fmap (C2S_Join . Nickname) <$> simpleInputWidget "Your nickname" "Join chat"
-  recpNickEv <- simpleInputWidget "Recipient nickname" "Set recipient nickname"
-  recpNick <- fmap Nickname <$> holdDyn "" recpNickEv
-  sndMsgEv <- fmap C2S_Msg . attach (current recpNick) <$> simpleInputWidget "Nickname" "Join chat"
-  return $ mergeList [sndMsgEv, nickLoginEv]
-
-simpleInputWidget :: ( DomBuilder t m , MonadFix m) => Text -> Text -> m (Event t Text)
-simpleInputWidget plhText btnText = el "div" $ do
-  rec
-    tn <- inputElement $ def
-        & inputElementConfig_setValue .~ fmap (const "") subEv
-        & inputElementConfig_elementConfig . elementConfig_initialAttributes .~
-          ("placeholder" =: plhText)
-        & inputElementConfig_elementConfig . elementConfig_modifyAttributes .~
-          never
-
-    bn <- button btnText
-    let subEv = fmap T.strip
-          $ tag (current $ value tn)
-          $ leftmost [bn, keypress Enter tn]
-  return subEv
-
-
--- noPrerender
---   :: (Reflex t, MonadHold t m, Prerender js t m)
---   => (PrerenderClientConstraint js t (Client m) => Client m (Event t a)) -> m (Event t a)
--- noPrerender w = prerender (return never) w >>= switchHold never . updated
-
 
 genSecretKeyWidget
-  :: (MonadIO (Performable m), PerformEvent t m, PostBuild t m, MonadHold t m, DomBuilder t m)
+  :: (MonadFix m, TriggerEvent t m, MonadIO (Performable m), PerformEvent t m, PostBuild t m, MonadHold t m, DomBuilder t m)
   => m ()
 genSecretKeyWidget = el "div" $ do
 
   -- secret key input / generation
   btnClick <- el "div" $ do
     r <- button "Generate"
-    el "span" $ text " or enter your Secret Key"
+    el "span" $ text " or enter your Secret Key:"
     return r
   genKeyEv <- performEvent (liftIO Crypto.generateSecretKey <$ btnClick)
   skTextArea <- el "div" $ textAreaElement $ def
     & textAreaElementConfig_setValue .~ (showt . toBase58 <$> genKeyEv)
 
-  let skKeyChangedEv = traceEventWith show $ fmap (fmap fromBase58 . fromBase58Text) (updated $ _textAreaElement_value skTextArea)
+  skKeyChangedEv <- fmap (fmap fromBase58 . fromBase58Text) <$>
+    debounce 0.2 ( updated ( _textAreaElement_value skTextArea))
 
   -- public key generation
-  el "div" $ text "Your public key:"
-  pkTextArea <- textAreaElement $ def
-    & textAreaElementConfig_setValue .~ (maybe "<invalid secret key>" (showt . toBase58 . Crypto.publicKeyfromSecret) <$> skKeyChangedEv)
+  pkText <- holdDyn "" (maybe "<invalid secret key>" (showt . toBase58 . Crypto.publicKeyfromSecret) <$> skKeyChangedEv)
+  readonlyTextArea "Your public key:" pkText
 
   -- address generation
   adrText <- holdDyn "" (maybe "<invalid public key>" (showt . toBase58 . Crypto.deriveAddress . Crypto.publicKeyfromSecret) <$> skKeyChangedEv)
@@ -168,8 +140,73 @@ genSecretKeyWidget = el "div" $ do
   return ()
 
 
+commandWidget
+  :: (MonadFix m, TriggerEvent t m, MonadIO (Performable m)
+     , PerformEvent t m, PostBuild t m, MonadHold t m, DomBuilder t m)
+  => m ()
+commandWidget = do
+  el "div" $ text "Enter your command"
+
+  commandTextArea <- el "div" $ textAreaElement def
+  let parseCmd txt = case parseCommand txt of
+        Nothing -> Left "Command parse error!"
+        Just x -> Right x
+  eithCommand :: Dynamic t (Either Text UCommand) <- holdDyn (Left "") =<< fmap parseCmd . traceEventWith show<$>
+    debounce 0.2 ( updated $ _textAreaElement_value commandTextArea)
+
+  el "div" $ dynText (showt <$> eithCommand)
+
+  let btnAttrs = ffor eithCommand $ \case
+        Left _ -> ("disabled" =: "")
+        Right _ -> mempty
+
+  dynAttrButton btnAttrs "Sign and send command"
+
+  -- let skKeyChangedEv = traceEventWith show $ fmap (fmap fromBase58 . fromBase58Text) (updated $ _textAreaElement_value commandTextArea)
+  return ()
+
+
+dynAttrButton :: (PostBuild t m, DomBuilder t m) => Dynamic t (Map Text Text) -> Text -> m (Event t ())
+dynAttrButton dynattrs t = do
+  (e,_) <- elDynAttr' "button" dynattrs $ text t
+  return $ domEvent Click e
+
+
 readonlyTextArea
   :: (DomBuilder t m, PostBuild t m) => Text -> Dynamic t Text -> m ()
 readonlyTextArea label content = el "div" $ do
   el "div" $ text label
   el "div" $ elAttr "textarea" ("readonly" =: "") $ dynText content
+
+
+-- chatWidget
+--   :: ( MonadFix m, MonadHold t m, PerformEvent t m, DomBuilder t m)
+--   => Event t (Nickname, Text) -> m (Event t (NonEmpty C2S))
+-- chatWidget servMsg = do
+--   nickLoginEv <- traceEventWith (const "nicklogin") . fmap (C2S_Join . Nickname) <$> simpleInputWidget "Your nickname" "Join chat"
+--   recpNickEv <- simpleInputWidget "Recipient nickname" "Set recipient nickname"
+--   recpNick <- fmap Nickname <$> holdDyn "" recpNickEv
+--   sndMsgEv <- fmap C2S_Msg . attach (current recpNick) <$> simpleInputWidget "Nickname" "Join chat"
+--   return $ mergeList [sndMsgEv, nickLoginEv]
+
+-- simpleInputWidget :: ( DomBuilder t m , MonadFix m) => Text -> Text -> m (Event t Text)
+-- simpleInputWidget plhText btnText = el "div" $ do
+--   rec
+--     tn <- inputElement $ def
+--         & inputElementConfig_setValue .~ fmap (const "") subEv
+--         & inputElementConfig_elementConfig . elementConfig_initialAttributes .~
+--           ("placeholder" =: plhText)
+--         & inputElementConfig_elementConfig . elementConfig_modifyAttributes .~
+--           never
+
+--     bn <- button btnText
+--     let subEv = fmap T.strip
+--           $ tag (current $ value tn)
+--           $ leftmost [bn, keypress Enter tn]
+--   return subEv
+
+
+-- noPrerender
+--   :: (Reflex t, MonadHold t m, Prerender js t m)
+--   => (PrerenderClientConstraint js t (Client m) => Client m (Event t a)) -> m (Event t a)
+-- noPrerender w = prerender (return never) w >>= switchHold never . updated

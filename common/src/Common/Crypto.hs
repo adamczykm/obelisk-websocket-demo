@@ -22,6 +22,7 @@ import Control.DeepSeq
 import Control.Monad (replicateM)
 
 import Common.Base58.Internal
+import Common.ParseUtils
 import Crypto.Error
 
 import Text.Megaparsec
@@ -37,7 +38,7 @@ import qualified Crypto.PubKey.Ed25519 as Ed25519
 newtype SecretKey = SecretKey {_unsecrettemp :: Ed25519.SecretKey}
   deriving(Eq,Show)
 
-parseSecretKeyB58 :: Ord e => Parsec e ByteString (Base58Rep SecretKey)
+parseSecretKeyB58 :: (ShowErrorComponent e, Ord e) => Parsec e ByteString (Base58Rep SecretKey)
 parseSecretKeyB58 = fmap (Base58Rep "sk$") $ do
   string "sk$"
   b58 <- parseB58 44
@@ -71,7 +72,7 @@ newtype PublicKey = PublicKey Ed25519.PublicKey
   deriving(Eq, Show, NFData)
 
 
-parsePublicKeyB58 :: Ord e => Parsec e ByteString (Base58Rep PublicKey)
+parsePublicKeyB58 :: (ShowErrorComponent e, Ord e) => Parsec e ByteString (Base58Rep PublicKey)
 parsePublicKeyB58 = fmap (Base58Rep "pk$") $ do
   string "pk$"
   b58 <- parseB58 44
@@ -114,8 +115,11 @@ newtype Address = Address ByteString
 lastBytesCount :: Int
 lastBytesCount = 15
 
-parseAddressB58 :: Ord e => Parsec e ByteString (Base58Rep Address)
-parseAddressB58 = Base58Rep "$$" <$> (string "$$" *> parseB58 21)
+parseAddressB58 :: (ShowErrorComponent e, Ord e) => Parsec e ByteString (Base58Rep Address)
+parseAddressB58 = Base58Rep "$$" <$> (string "$$" *> (try (parseB58 21) <|> parseB58 20))
+
+parseAddressB58Text :: (ShowErrorComponent e, Ord e) => Parsec e Text (Base58Rep Address)
+parseAddressB58Text = Base58Rep "$$" . B.pack . charsToWords . T.unpack <$> (string "$$" *> parseB58Text 21)
 
 instance HasBas58Rep Address where
   toBase58 (Address adr) = Base58Rep "$$" (B58.encodeBase58 B58.bitcoinAlphabet adr)

@@ -1,5 +1,7 @@
 module Common.Base58.Internal where
 
+import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Maybe (isJust)
 import qualified Data.ByteString.Base58 as B58
 import Data.ByteString.Char8
@@ -28,11 +30,19 @@ class HasBas58Rep t where
 
 
 -- | Returns ByteString of given length if its in B58
-parseB58 :: Ord e => Int -> Parsec e ByteString ByteString
+parseB58 :: (ShowErrorComponent e, Ord e) => Int -> Parsec e ByteString ByteString
 parseB58 len = do
   tkns <- replicateM len anyChar
   if isJust $ B58.decodeBase58 B58.bitcoinAlphabet (B.pack tkns)
     then return (pack (unsafeChr8 <$> tkns))
+    else fail "Could not parse address"
+
+-- | Returns ByteString of given length if its in B58
+parseB58Text :: (ShowErrorComponent e, Ord e) => Int -> Parsec e Text Text
+parseB58Text len = dbg "parseb58" $ do
+  tkns <- replicateM len anyChar
+  if isJust $ B58.decodeBase58 B58.bitcoinAlphabet (B.pack (fromIntegral . fromEnum <$> tkns))
+    then return (T.pack tkns)
     else fail "Could not parse address"
 
 fromBase58Text :: HasBas58Rep t => T.Text -> Maybe (Base58Rep t)
