@@ -11,6 +11,10 @@ library
                , text
                , cryptonite >= 0.26
                , bytestring >= 0.10
+               , base58-bytestring
+               , megaparsec
+               , singletons
+               , text-show
   default-extensions:
     TypeFamilies
     PolyKinds

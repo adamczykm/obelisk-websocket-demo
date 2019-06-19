@@ -14,4 +14,8 @@ project ./. ({ ... }: {
   android.displayName = "Obelisk Minimal Example";
   ios.bundleIdentifier = "systems.obsidian.obelisk.examples.minimal";
   ios.bundleName = "Obelisk Minimal Example";
+  overrides = self: super: {
+    text-show = (if self.ghc.isGhcjs or false then pkgs.haskell.lib.dontCheck else (x: x)) super.text-show;
+  };
+
 })

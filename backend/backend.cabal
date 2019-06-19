@@ -12,9 +12,13 @@ library
                , frontend
                , obelisk-backend
                , obelisk-route
+               , snap
+               , websockets-snap
+               , text-show
   exposed-modules:
-    Backend
-  ghc-options: -Wall
+                  Backend
+  other-modules: Backend.WebSocketChat
+  ghc-options: -Wall -threaded -rtsopts "-with-rtsopts=-N"
 
 executable backend
   main-is: main.hs
@@ -26,3 +30,5 @@ executable backend
                , common
                , frontend
                , obelisk-backend
+               , snap
+               , text-show
