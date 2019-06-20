@@ -79,6 +79,7 @@ mainWidget r = prerender_ (return ()) $ do
 
   mkeys <- genSecretKeyWidget
   el "hr" $ return ()
+  commandExamples
   mcmd <- commandWidget
   cmdSignedEv <- signCommandWidget mkeys mcmd
   el "hr" $ return ()
@@ -223,3 +224,12 @@ statusWidget resetE selector = do
                          , Left <$> select selector S2C_ServerMessageTag])
       simpleList txx (el "li" . dynText)
   return ()
+
+
+commandExamples :: (DomBuilder t m) => m ()
+commandExamples = el "div" $ do
+  el "div" $ text "Command examples"
+  el "ul" $ do
+    el "li" $ text "beg SKL10"
+    el "li" $ text "beg [SKL5 + SKL5]"
+    el "li" $ text "transfer SKL2019 to $$2g3vv2uAqh7qhoEv7Rskz"
