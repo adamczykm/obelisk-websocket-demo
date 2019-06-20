@@ -1,8 +1,6 @@
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -11,6 +9,8 @@ module Frontend where
 
 import Debug.Trace
 
+
+import Data.ByteString.Lazy (toStrict)
 import Data.Maybe
 import Data.Dependent.Map
 import Data.Map.Strict (Map)
@@ -43,8 +43,13 @@ import Common.Route
 import Common.WsProtocol
 import Common.Base58
 import Common.Lang
+import Common.Skl
+
+import Common.Crypto (Keys(..))
 import qualified Common.Crypto as Crypto
 
+
+import qualified Data.Aeson
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString as B
 import Data.Text.Encoding
@@ -61,26 +66,30 @@ frontend = Frontend
 
 
 
-mainWidget :: (MonadFix m, PerformEvent t m, Prerender js t m) => Maybe Text -> m ()
+mainWidget :: forall t m js. (MonadFix m, PerformEvent t m, Prerender js t m) => Maybe Text -> m ()
 mainWidget r = prerender_ (return ()) $ do
-  -- ( c2sEvent, c2sEventTrigger ) <- newTriggerEvent
-  -- s2cEvent <- webSocketClient r c2sEvent
-  -- let s2cEventSel = fan (tagEvent <$> s2cEvent)
+
+  -- server to client events
+  ( c2sEvent, c2sEventTrigger ) <- newTriggerEvent
+  s2cEvent <- webSocketClient r (traceEventWith (const "c2s event") c2sEvent)
+  let s2cEventSel = fan (tagServerEvent <$> s2cEvent)
+  -------------------------
 
   -- c2sNe <- chatWidget (select s2cEventSel S2C_MsgTag)
-  -- let c2sEvents =  mergeWith (<>) [c2sNe]
-  -- (performEvent_ $ liftIO . c2sEventTrigger . NE.toList <$> c2sEvents)
 
-  genSecretKeyWidget
+  mkeys <- genSecretKeyWidget
   el "hr" $ return ()
-  commandWidget
+  mcmd <- commandWidget
+  cmdSignedEv <- signCommandWidget mkeys mcmd
+  el "hr" $ return ()
+  statusWidget (updated mkeys) s2cEventSel
 
-  where
-    tagEvent :: S2C -> DMap S2CEventTag Identity
-    tagEvent = \case
-      S2C_Welcome -> singleton S2C_WelcomeTag (Identity ())
-      S2C_ServerMessage msg -> singleton S2C_ServerMessageTag (Identity msg)
-      S2C_Msg msg -> singleton S2C_MsgTag (Identity msg)
+  -- client to server events
+  let
+    msg = 1 -- "TODO"
+    getSklState = C2S_PingForSKL . flip Crypto.signWithKeys msg <$> fmapMaybe id (updated mkeys)
+    c2sEvents = mergeWith (<>) [(:[]) <$> getSklState,  (:[]) <$> cmdSignedEv]
+  (performEvent_ $ liftIO . c2sEventTrigger <$> c2sEvents)
 
 
 webSocketClient
@@ -109,13 +118,14 @@ webSocketClient r sendMsgEv =
         Nothing -> return never
         Just uri -> do
           traceM (show (render uri))
-          ws <- jsonWebSocket (render uri) $ def & webSocketConfig_send .~ sendMsgEv
+          ws <- jsonWebSocket (render uri) $ def & webSocketConfig_send .~ (traceEventWith (const "sendMsgEv")sendMsgEv)
           return $ fmapMaybe id $ _webSocket_recv ws
+
 
 
 genSecretKeyWidget
   :: (MonadFix m, TriggerEvent t m, MonadIO (Performable m), PerformEvent t m, PostBuild t m, MonadHold t m, DomBuilder t m)
-  => m ()
+  => m (Dynamic t (Maybe Crypto.Keys))
 genSecretKeyWidget = el "div" $ do
 
   -- secret key input / generation
@@ -123,28 +133,29 @@ genSecretKeyWidget = el "div" $ do
     r <- button "Generate"
     el "span" $ text " or enter your Secret Key:"
     return r
-  genKeyEv <- performEvent (liftIO Crypto.generateSecretKey <$ btnClick)
-  skTextArea <- el "div" $ textAreaElement $ def
-    & textAreaElementConfig_setValue .~ (showt . toBase58 <$> genKeyEv)
 
-  skKeyChangedEv <- fmap (fmap fromBase58 . fromBase58Text) <$>
+  genSecretEv <- performEvent (liftIO Crypto.generateSecretKey <$ btnClick)
+  skTextArea <- el "div" $ textAreaElement $ def
+    & textAreaElementConfig_setValue .~ (showt . toBase58 <$> genSecretEv)
+
+  newKeysEv <- fmap (fmap (Crypto.genBase58Keys . fromBase58) . fromBase58Text) <$>
     debounce 0.2 ( updated ( _textAreaElement_value skTextArea))
 
   -- public key generation
-  pkText <- holdDyn "" (maybe "<invalid secret key>" (showt . toBase58 . Crypto.publicKeyfromSecret) <$> skKeyChangedEv)
+  pkText <- holdDyn "" (maybe "<invalid secret key>" (showt . _public) <$> newKeysEv)
   readonlyTextArea "Your public key:" pkText
 
   -- address generation
-  adrText <- holdDyn "" (maybe "<invalid public key>" (showt . toBase58 . Crypto.deriveAddress . Crypto.publicKeyfromSecret) <$> skKeyChangedEv)
+  adrText <- holdDyn "" (maybe "<invalid public key>" (showt . _address) <$> newKeysEv)
   readonlyTextArea "Your address:" adrText
 
-  return ()
+  holdDyn Nothing newKeysEv
 
 
 commandWidget
   :: (MonadFix m, TriggerEvent t m, MonadIO (Performable m)
      , PerformEvent t m, PostBuild t m, MonadHold t m, DomBuilder t m)
-  => m ()
+  => m (Dynamic t (Maybe LangCommand))
 commandWidget = do
   el "div" $ text "Enter your command"
 
@@ -157,14 +168,30 @@ commandWidget = do
 
   el "div" $ dynText (showt <$> eithCommand)
 
-  let btnAttrs = ffor eithCommand $ \case
-        Left _ -> ("disabled" =: "")
-        Right _ -> mempty
+  return (eithCommand <#> \case
+             Left _ -> Nothing
+             Right c -> Just c)
 
-  dynAttrButton btnAttrs "Sign and send command"
 
-  -- let skKeyChangedEv = traceEventWith show $ fmap (fmap fromBase58 . fromBase58Text) (updated $ _textAreaElement_value commandTextArea)
-  return ()
+
+
+signCommandWidget :: (PostBuild t m, DomBuilder t m) => Dynamic t (Maybe Keys) -> Dynamic t (Maybe LangCommand) -> m (Event t C2S)
+signCommandWidget mkeys mcmd = do
+
+  let dynVals = ffor2 mkeys mcmd $ \k c -> case (k, c) of
+        (Just ks, Just cmd) -> ( mempty
+                               , Just $ C2S_LangCommand (Crypto.signWithKeys ks (dropTypesCommand cmd) ))
+
+        _ -> ("disabled" =: "", Nothing)
+
+  btnClick <- dynAttrButton (fst <$> dynVals) "Sign and send command"
+
+  return $ fmapMaybe id $ traceEventWith show $ tag (current (snd <$> dynVals)) btnClick
+
+
+
+(<#>) :: Functor f => f a -> (a->b) -> f b
+(<#>) = flip (<$>)
 
 
 dynAttrButton :: (PostBuild t m, DomBuilder t m) => Dynamic t (Map Text Text) -> Text -> m (Event t ())
@@ -180,34 +207,19 @@ readonlyTextArea label content = el "div" $ do
   el "div" $ elAttr "textarea" ("readonly" =: "") $ dynText content
 
 
--- chatWidget
---   :: ( MonadFix m, MonadHold t m, PerformEvent t m, DomBuilder t m)
---   => Event t (Nickname, Text) -> m (Event t (NonEmpty C2S))
--- chatWidget servMsg = do
---   nickLoginEv <- traceEventWith (const "nicklogin") . fmap (C2S_Join . Nickname) <$> simpleInputWidget "Your nickname" "Join chat"
---   recpNickEv <- simpleInputWidget "Recipient nickname" "Set recipient nickname"
---   recpNick <- fmap Nickname <$> holdDyn "" recpNickEv
---   sndMsgEv <- fmap C2S_Msg . attach (current recpNick) <$> simpleInputWidget "Nickname" "Join chat"
---   return $ mergeList [sndMsgEv, nickLoginEv]
-
--- simpleInputWidget :: ( DomBuilder t m , MonadFix m) => Text -> Text -> m (Event t Text)
--- simpleInputWidget plhText btnText = el "div" $ do
---   rec
---     tn <- inputElement $ def
---         & inputElementConfig_setValue .~ fmap (const "") subEv
---         & inputElementConfig_elementConfig . elementConfig_initialAttributes .~
---           ("placeholder" =: plhText)
---         & inputElementConfig_elementConfig . elementConfig_modifyAttributes .~
---           never
-
---     bn <- button btnText
---     let subEv = fmap T.strip
---           $ tag (current $ value tn)
---           $ leftmost [bn, keypress Enter tn]
---   return subEv
-
-
--- noPrerender
---   :: (Reflex t, MonadHold t m, Prerender js t m)
---   => (PrerenderClientConstraint js t (Client m) => Client m (Event t a)) -> m (Event t a)
--- noPrerender w = prerender (return never) w >>= switchHold never . updated
+statusWidget :: (MonadFix m, PostBuild t m, MonadHold t m, DomBuilder t m) => Event t a -> EventSelector t S2CEventTag -> m ()
+statusWidget resetE selector = do
+  el "div" $ do
+    skls <- holdDyn (Skl 0) (leftmost [Skl 0 <$ resetE, select selector S2C_SklTag])
+    el "soan" $ text "Your tokens: "
+    el "span" $ dynText (showt <$> skls)
+  el "div" $ do
+    el "div" $ text "Transactions:"
+    el "ul" $ do
+      let folder (Left tx) txx = tx : txx
+          folder (Right txx) _ = txx
+      txx <- foldDyn folder []
+              ( leftmost [ Right <$> select selector S2C_TxxTag
+                         , Left <$> select selector S2C_ServerMessageTag])
+      simpleList txx (el "li" . dynText)
+  return ()

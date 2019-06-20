@@ -1,21 +1,35 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric #-}
 module Common.Base58.Internal where
 
+import Data.Aeson
+import Data.Aeson.Parser
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Maybe (isJust)
 import qualified Data.ByteString.Base58 as B58
 import Data.ByteString.Char8
 import qualified Data.ByteString as B
-import qualified Data.Text as T
 import Data.Text.Encoding
 import Control.Monad (replicateM)
+import           GHC.Generics (Generic)
 import TextShow
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import Data.Text.Internal.Unsafe.Char (unsafeChr8)
+import Common.ParseUtils
 
 data Base58Rep a = Base58Rep { _hdr ::  ByteString, _base58 :: ByteString }
-  deriving(Eq, Ord)
+  deriving(Eq, Ord, Generic)
+
+-- instance ToJSON (Base58Rep a) where toEncoding = genericToEncoding defaultOptions
+instance FromJSON (Base58Rep a) where
+  parseJSON = withObject "Base58Rep" $ \v -> Base58Rep <$>
+    (fmap (B.pack . charsToWords . T.unpack) (v .: "_hdr")) <*>
+    (fmap (B.pack . charsToWords . T.unpack) (v .: "_base58"))
+
+instance ToJSON (Base58Rep a) where
+  toJSON (Base58Rep h b) = object ["_hdr" .= decodeLatin1 h, "_base58" .= decodeLatin1 b]
 
 instance Show (Base58Rep a) where
   show = T.unpack . showt

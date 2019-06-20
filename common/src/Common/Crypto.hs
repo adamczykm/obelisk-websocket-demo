@@ -8,6 +8,10 @@ module Common.Crypto where
 
 import Debug.Trace
 
+
+import Data.ByteString.Lazy (toStrict)
+import Data.Aeson
+import qualified Data.Aeson.Parser as AP
 import Data.Maybe (fromJust, isJust)
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
@@ -18,8 +22,10 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base58 as B58
 import Data.Void
 import Data.String (IsString)
+import Control.Applicative (empty)
 import Control.DeepSeq
 import Control.Monad (replicateM)
+import Data.Text.Encoding
 
 import Common.Base58.Internal
 import Common.ParseUtils
@@ -104,8 +110,40 @@ publicKeyfromSecret (SecretKey sk)= PublicKey $ Ed25519.toPublic sk
 newtype Signature = Signature Ed25519.Signature
   deriving(Eq, Show, NFData)
 
+parseSignatureB58 :: (ShowErrorComponent e, Ord e) => Parsec e ByteString (Base58Rep Signature)
+parseSignatureB58 = fmap (Base58Rep "sig$") $ do
+  string "sig$"
+  b58 <- parseB58 88
+  let pk = do
+        bts <- B58.decodeBase58 B58.bitcoinAlphabet b58
+        maybeCryptoError (Ed25519.signature bts)
+  case pk of
+    Just pk -> return b58
+    Nothing -> fail "Couldn't parse public key."
+
+
+instance HasBas58Rep Signature where
+  toBase58 (Signature sig) = Base58Rep "sig$" (B58.encodeBase58 B58.bitcoinAlphabet (B.pack (BA.unpack sig)))
+  fromBase58 (Base58Rep _ bts) = Signature $ unsafeFromBts $ fromJust (B58.decodeBase58 B58.bitcoinAlphabet bts)
+    where
+      unsafeFromBts bts = case Ed25519.signature bts of
+        CryptoPassed a -> a
+        _ -> error "Should not happend in fromBase58 signature."
+
+  fromBase58BString = parseMaybe @Void parseSignatureB58
+
 verifySignature :: ByteArrayAccess ba => PublicKey -> ba -> Signature -> Bool
 verifySignature (PublicKey pk) ba (Signature sig) = Ed25519.verify pk ba sig
+
+instance ToJSON Signature where
+  toJSON (Signature s) = toJSON $ decodeUtf8 (B.pack (BA.unpack s))
+
+instance FromJSON Signature where
+  parseJSON s = sth <$> parseJSON s
+    where
+      sth :: Text -> Signature
+      sth = Signature . throwCryptoError . Ed25519.signature . encodeUtf8
+
 
 -- ===================== ADDRESS =======================
 
@@ -131,3 +169,23 @@ deriveAddress (PublicKey pk) = Address $ B.pack (drop (BA.length pk - lastBytesC
 
 ownsAddress :: PublicKey -> Address -> Bool
 ownsAddress pk addr = deriveAddress pk == addr
+
+-- ====================== AUXILIARY ========================
+
+data Keys = Keys { _secret :: Base58Rep SecretKey, _public :: Base58Rep PublicKey, _address :: Base58Rep Address }
+
+genBase58Keys :: SecretKey -> Keys
+genBase58Keys sk =
+  let pk = publicKeyfromSecret sk
+      adr = deriveAddress pk
+  in Keys (toBase58 sk) (toBase58 pk) (toBase58 adr)
+
+
+signWithKeys :: ToJSON a => Keys -> a -> (a, Base58Rep PublicKey, Base58Rep Signature)
+signWithKeys ks v =
+  let
+    sk = _secret ks
+    pk = _public ks
+    bts = toStrict (Data.Aeson.encode v)
+    signed = toBase58 (sign (fromBase58 sk) (fromBase58 pk) bts)
+  in (v, pk, signed)

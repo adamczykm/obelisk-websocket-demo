@@ -13,16 +13,16 @@ import Network.WebSockets.Snap
 import Obelisk.Backend
 import Control.Monad.IO.Class
 
-import qualified WebSocketChat
+import qualified Server
 
 backend :: Backend BackendRoute FrontendRoute
 backend = Backend
   { _backend_run = \serve -> do
-      backendState <- liftIO WebSocketChat.initBackend
+      backendState <- liftIO Server.initBackend
       serve $ \case
         BackendRoute_Missing :=> Identity () -> return ()
-        BackendRoute_WebSocket :=> Identity () -> do
-          runWebSocketsSnap (WebSocketChat.application backendState)
+        BackendRoute_WebSocket :=> Identity () ->
+          runWebSocketsSnap (Server.application backendState)
 
   , _backend_routeEncoder = backendRouteEncoder
   }

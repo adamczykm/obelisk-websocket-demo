@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE GADTs #-}
@@ -26,12 +27,18 @@ import qualified Text.Megaparsec.Byte.Lexer as BP
 import qualified Text.Megaparsec.Char.Lexer as CP
 import TextShow
 import Common.ParseUtils
+import GHC.Generics hiding (UAddr)
+import Data.Aeson
+import Data.Kind (Type)
 
 
 data UValT
   = UAddr (Base58Rep Address)
   | USkl Skl
-  deriving(Eq, Ord, Show)
+  deriving(Eq, Ord, Show, Generic)
+
+instance ToJSON UValT where toEncoding = genericToEncoding defaultOptions
+instance FromJSON UValT
 
 
 instance TextShow UValT where
@@ -42,7 +49,10 @@ instance TextShow UValT where
 data UVal
   = UValId UValT
   | UValAdd UVal UVal
-  deriving(Eq, Ord, Show)
+  deriving(Eq, Ord, Show,Generic)
+
+instance ToJSON UVal where toEncoding = genericToEncoding defaultOptions
+instance FromJSON UVal
 
 instance TextShow UVal where
   showb = \case
@@ -52,7 +62,10 @@ instance TextShow UVal where
 data UCommand
  = UBeg UVal
  | UTransfer UVal UVal
- deriving(Eq,Show,Ord)
+ deriving(Eq,Show,Ord,Generic)
+
+instance ToJSON UCommand where toEncoding = genericToEncoding defaultOptions
+instance FromJSON UCommand
 
 instance TextShow UCommand where
   showb = \case
@@ -70,7 +83,7 @@ parseUValT = parenthTerm (try parseAddr <|> parseSkl)
 parseUVal :: (ShowErrorComponent e, Ord e) => Parsec e Text UVal
 parseUVal = dbg "uval" $ ( try parseIdT <|> parseAdd )
   where
-    parseAdd = UValAdd <$> (char '[' *> (parseUVal <* char '+')) <*> (parseUVal <* char ']')
+    parseAdd = UValAdd <$> (char '[' *> (parseUVal <* space <* char '+')) <*> (parseUVal <* char ']')
     parseIdT = UValId <$> parseUValT
 
 
@@ -91,6 +104,7 @@ parseCommand = parseMaybe @Void commandParser
 
 -- ======================== typed lang ==========================
 
+
 data Sing (t :: T) where
   SAddr :: Sing 'TAddr
   SSkl :: Sing 'TSkl
@@ -99,6 +113,10 @@ data T
   = TAddr
   | TSkl
   deriving(Eq, Ord, Show)
+
+type family EvalT (t :: T) :: Type where
+  EvalT 'TAddr = Base58Rep Address
+  EvalT 'TSkl = Skl
 
 
 data ValT a where
@@ -156,3 +174,17 @@ typeCheckCommand = left reverse .  \case
   UTransfer s a -> TransferCmd <$>
     typeCheckVal ["Type error in the first argument of TRANSFER command:"] SSkl s <*>
     typeCheckVal ["Type error in the second argument of TRANSFER command:"] SAddr a
+
+dropTypesCommand :: LangCommand -> UCommand
+dropTypesCommand = \case
+  BegCmd v -> UBeg (unT v)
+  TransferCmd v1 v2 -> UTransfer (unT v1) (unT v2)
+  where
+    unT = \case
+      ValId x -> UValId (unTT x)
+      ValAdd x1 x2 -> UValAdd (unT x1) (unT x2)
+
+    unTT :: ValT a -> UValT
+    unTT = \case
+      VAddr x -> UAddr x
+      VSkl x -> USkl x
