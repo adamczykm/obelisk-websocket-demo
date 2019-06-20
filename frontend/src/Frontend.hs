@@ -233,3 +233,4 @@ commandExamples = el "div" $ do
     el "li" $ text "beg SKL10"
     el "li" $ text "beg [SKL5 + SKL5]"
     el "li" $ text "transfer SKL2019 to $$2g3vv2uAqh7qhoEv7Rskz"
+  el "p" $ text "Try to copy secret key between multiple tabs in the browser"
